@@ -20,60 +20,73 @@ import socket
 import time
 
 # Default parameter values
-DEFAULT_SEND_INTERVAL_S = 5
+DEFAULT_SEND_INTERVAL_S = 0
 DEFAULT_BLOCK_SIZE_B = 1
 DEFAULT_NUM_BLOCKS = 1000
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 13800
+DEFAULT_FNAME = 'latency.txt'
 
 def ns_to_s(ns_value):
     return float(ns_value)/ (10 ** 9)
 
-def client(server_host, server_port, send_interval_s, block_size_b, num_blocks):
+def client(server_host, server_port, send_interval_s, block_size_b, num_blocks, latency_out_file):
     print('Starting client connection to server %s:%d' % (server_host, server_port))
     print('Will be sending blocks of size %d every %d seconds for a total of %d blocks '
           '(est. time: %d minutes)' % (block_size_b, send_interval_s, num_blocks, num_blocks * send_interval_s / 60))
 
-    data = randbytes(block_size_b)
+    block_data = randbytes(block_size_b)
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.connect((server_host, server_port))
-        except Exception as e:
-            print('Failed to connect to server with Error "%s"' % str(e))
-            exit(-1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s, open(latency_out_file, 'w+') as f:
+        while True:
+            try:
+                s.connect((server_host, server_port))
+                break
+            except Exception as e:
+                time.sleep(0.1)
 
-            
+        print('Successfully connected to server %s:%d' % (server_host, server_port))
+
         # We have connected successfully, begin loop of sending data and recording RTT.
-        rtt = 0
-        for _ in range(num_blocks):
+        rtt = 0.
+        for i in range(num_blocks):
+            print('Block: %d' % i)
             send_time = time.time_ns()
-            s.sendall(data)
-            data = s.recv(block_size_b)
+            s.sendall(block_data)
+
+            b_received = 0
+            while True:
+                data = s.recv(8192)
+                b_received += len(data) # Warning: Copy.
+                if b_received == block_size_b:
+                    b_received = 0
+                    break
+
             receive_time = time.time_ns()
             rtt = ns_to_s(receive_time - send_time)
-            print('%f' % rtt)
-            time.sleep(send_interval_s - rtt)
-
+            f.write('%f\n' % rtt)
+            time.sleep(max(0, send_interval_s - rtt))
 
 def server(server_host, server_port, block_size_b):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((server_host, server_port))
         s.listen()
+
+        block_data = randbytes(block_size_b)
+
         conn, addr = s.accept()
         with conn:
             print('Connected to', addr)
             b_received = 0
-            block = b''
             while True:
-                data = conn.recv(1024)
+                data = conn.recv(8192)
                 if not data:
                     break
 
-                block += data
-                if len(block) == block_size_b:
-                    conn.sendall(block)
-                    block = b''
+                b_received += len(data)
+                if b_received == block_size_b:
+                    conn.sendall(block_data)
+                    b_received = 0
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Measures latency from a client to a server '
@@ -119,10 +132,17 @@ if __name__ == '__main__':
                     action='store',
                     help='The number of blocks for a client to send')
 
+    parser.add_argument('--latency_fname', 
+                    dest='latency_fname', 
+                    default=DEFAULT_FNAME,
+                    type=str,
+                    action='store',
+                    help='The file to write latencies to')
+
     args = parser.parse_args() 
-    
+
     # Start client or server code.
     if args.is_client:
-        client(args.host, args.port, args.send_interval_s, args.block_size_b, args.num_blocks)
+        client(args.host, args.port, args.send_interval_s, args.block_size_b, args.num_blocks, args.latency_fname)
     else:
         server(args.host, args.port, args.block_size_b)
